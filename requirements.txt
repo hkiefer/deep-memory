@@ -1,0 +1,10 @@
+matplotlib
+numpy
+numba
+sklearn
+pandas
+cvxopt
+scipy
+progressbar33
+terminaltables
+gym
