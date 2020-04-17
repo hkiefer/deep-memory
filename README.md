@@ -1,4 +1,4 @@
-# deep-memory
+# deep-memory (not fixed)
 
 Python 3 package for memory kernel extraction from time-series using neural networks (multilayer perceptrons). Methodology is inspired by suggestions of: 
 
