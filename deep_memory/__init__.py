@@ -1,7 +1,15 @@
 from __future__ import print_function
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
+import torch
+from collections import OrderedDict
 
+from .correlation import *
+from .mlp_kernel_extraction import *
+from .loaddata import *
+
+#for mlp_extraction_(scratch)
 from .activation_functions import *
 from .kernels import *
 from .layers import *
@@ -13,15 +21,14 @@ from .optimizers import *
 from .misc import Plot
 from .data_manipulation import *
 from .data_operation import *
-from .correlation import *
-from .mlp_kernel_extraction import *
+from .mlp_kernel_extraction_scratch import *
 
 
 def ver():
     """
     Show the module version.
     """
-    print("This is deep memory version 0.21")
+    print("This is deep memory version 1.01")
 
 
 def xframe(x, time, fix_time=True, round_time=1.e-5, dt=-1):

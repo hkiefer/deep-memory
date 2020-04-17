@@ -3,6 +3,9 @@ numpy
 numba
 sklearn
 pandas
+torch
+datetime
+yfinance
 cvxopt
 scipy
 progressbar33

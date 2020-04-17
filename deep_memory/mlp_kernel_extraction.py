@@ -1,249 +1,225 @@
-from __future__ import print_function, division
 import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
 import math
 
-import matplotlib.pyplot as plt
+import torch #install pytorch first!! pip3 install torch
+from torch.autograd import Variable
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
 
-from deep_memory import *
+from collections import OrderedDict
+
+
 
 class MultilayerPerceptron():
-    """Multilayer Perceptron Memory Kernel Extraction. A fully-connected neural network with one hidden layer.
-    Unrolled to display the whole forward and backward pass.
+    """Multilayer Perceptron Memory Kernel Extraction. A fully-connected neural network with one hidden layer. The whole backpropagation step is provided by modules from the library pytorch
+    
     Parameters:
     -----------
-    n_hidden: int:
+    n_hidden: int
         The number of processing nodes (neurons) in the hidden layer. 
-    n_iterations: float
+    n_epochs: float
         The number of training iterations the algorithm will tune the weights for.
     learning_rate: float
         The step length that will be used when updating the weights.
+    fe: array
+        array of v-U-correlation function
+    dt: float
+        time-step of input array 
+    optimizer: string
+        name of optimizer that will be used for backpropagation step (Adam, SGD or Rprop)
+
     """
-    def __init__(self, n_hidden, n_iterations=3000, learning_rate=0.01, dt = 1, optimizer = False, loss = 'mse', fe = None):
-        self.n_hidden = n_hidden
-        self.n_iterations = n_iterations
+    def __init__(self, n_hidden, n_epochs=3000, learning_rate=0.01, dt = 1, optimizer = 'Rprop', fe = None):
+        self.n_hidden = n_hidden #number neuron in 
+        self.n_epochs = n_epochs
         self.learning_rate = learning_rate
-        self.lr_cache = learning_rate
-        #self.hidden_activation = Sigmoid()
-        self.hidden_activation = MemInt()
-        self.output_activation = Linear()
-        self.fe = fe #no deterministic force in GLE
-        if loss == 'mse':
-            self.loss = SquareLoss()
-        elif loss == 'mae':
-            self.loss = Loss()
-       
-        self.stop = self.n_iterations
+        self.fe = fe 
+        self.dt = dt 
         self.optimizer = optimizer
-        if self.optimizer == 'rprop' :
-            self.rprop = Rprop(learning_rate = self.learning_rate, etapos = 1.3, etaneg = 0.6)
-        if self.optimizer == 'adam' :
-            self.adam = Adam(learning_rate = self.learning_rate)
-        self.dt = dt
-    def _initialize_weights(self, X, y):
-        n_features = 1 #only one trajectory
-        
-        n_samples, n_features = X.shape
-        _, n_outputs = y.shape
-        
-        # Hidden layer
-        limit   = 1 / math.sqrt(n_features)
+    
+    # takes in the network module and applies the specified weight initialization
+    def weights_init_uniform_rule(self,m):
+        classname = m.__class__.__name__
+        # for every Linear layer in a model..
+        if classname.find('Linear') != -1:
+            # get the number of the inputs
+            n = m.in_features
+            y = 1.0/np.sqrt(n)
+            #m.weight.data.uniform_(-y, y)
+            m.weight.data.uniform_(0, y)
+            m.bias.data.fill_(0)
 
-        self.W  = np.random.uniform(0, limit, (n_features, self.n_hidden))
-        
-        self.w0 = np.zeros((1, self.n_hidden))
-        # Output layer
-        limit = 1 
-        self.V  = np.random.uniform(limit, limit, (self.n_hidden, n_outputs))
-        #self.V = np.array([1])
-        self.v0 = np.zeros((1, n_outputs))
 
-    def fit(self, X, y, early_stop = 1e-06, accept_bias = False, check_loss = 5, initial = None):
+    def RMSELoss(self,yhat,y):
+        return torch.sqrt(torch.mean((yhat-y)**2))
+    
+    #creating and fitting the neural network
+    def fit(self, X, y,early_stop = 4e-06, hybrid =None, accept_bias = True, gpu = False, initial = None):        
+        t = np.array([np.arange(0, len(X)*self.dt, self.dt)]).T
         
-        self._initialize_weights(X, y)
+        feature, label = Variable(torch.FloatTensor([t]), requires_grad=True), Variable(torch.FloatTensor([y]), requires_grad=False) #input (time array) and desired output
+        if self.fe is None:
+            self.fe = np.array(np.zeros(len(feature[0]))).T
+            self.fe = torch.FloatTensor([self.fe])
+        else:
+            self.fe = torch.FloatTensor([self.fe])
+            
+        #create Model
+        activation_function = MemInt(dt = self.dt, fe = self.fe, h = torch.FloatTensor([X]))
+        self.model = nn.Sequential(OrderedDict([('fc1', nn.Linear(1, self.n_hidden)),
+                                          ('GLE', activation_function),
+                                          ('fc2', nn.Linear(self.n_hidden, 1))]))  
+
+        #choose Loss function
+        #criterion = RMSELoss
+        criterion = nn.MSELoss(reduction = 'mean')
+
+
+        #choose optimizer
+        if self.optimizer == 'Rprop':
+            
+            optimizer = optim.Rprop(self.model.parameters(), lr=self.learning_rate)
+        
+        elif self.optimizer == 'Adam':
+            optimizer = optim.Adam(self.model.parameters(), lr = self.learning_rate)
+        
+        elif self.optimizer == 'SGD':
+            optimizer = optim.SGD(self.model.parameters(), lr = self.learning_rate)
+            
+        else:
+            print('Choose an optimzer (Adam or Rprop!)')
+            
+            
+        
+        #initialize weights
+        self.model.apply(self.weights_init_uniform_rule)
+        self.model.fc2.weight.data.uniform_(1, 1)
+        
         if not initial is None:
             n_weights = self.n_hidden
             
             for i in range (n_weights):
-                self.W[0][i] = (initial/np.exp(self.w0[0][i]))**(1/3)
-                self.W[0][i] /= n_weights       
-    
-        old_grad =  0
-        
-        self.losses = []
-        best_weights = self.W
-        best_biases = self.w0
-        
-        if self.fe is None:
-            self.fe = np.zeros(len(X))
-         
-        for i in range(self.n_iterations):
-
-            # ..............
-            #  Forward Pass
-            # ..............
-
-            # HIDDEN LAYER
-            
-            inp = np.array([np.arange(0,len(X)*self.dt, self.dt)]).T
-            
-   
-            hidden_output = np.zeros((self.n_hidden,  len(inp)))
-            
-            for j in range(self.n_hidden):
-                hidden_input = -1*(inp*self.W[0][j] + self.w0[0][j])
-                hidden_output[j] = -1*self.hidden_activation(hidden_input,X, dt = self.dt) + self.fe
+                #self.model.fc1.weight.data[i] = (initial)**(1/3)
                 
-            hidden_output = hidden_output.T 
-            
+                self.model.fc1.weight.data[i] = (initial[i][0])
+                self.model.fc1.weight.data[i] /= n_weights
+                
+                self.model.fc1.bias.data[i] = np.log(initial[i][1])
+                
+                self.model.fc2.weight.data[i] = (initial[i][0])
+                self.model.fc2.weight.data[i] /= n_weights    
+                
+                
+        #create list of losses for every epoch     
+        losses = []  
+        
+        #start training
+        for e in range(0,self.n_epochs):
+
+                # Training pass
+            optimizer.zero_grad()
+            with torch.no_grad():
+                if accept_bias == False:
+                    self.model.fc1.bias.zero_()
+                    self.model.fc2.bias.zero_()
+                    self.model.fc2.weight.data.uniform_(1, 1)
+            #print(self.model.fc1.weight.data)
+            #print(self.model.fc1.bias.data)
+            #model.fc1.weight = torch.nn.Parameter
+
            
-            # OUTPUT LAYER
+            output = self.model(feature)
             
-           
-            output_layer_input = hidden_output.dot(self.V) + self.v0
+            loss = criterion(output, label)
+            losses.append(loss.detach().numpy())
+            print('loss in epoch ' + str(e+1) + ' : ' + str(loss.detach().numpy()))
             
-            
-            y_pred = self.output_activation(output_layer_input)
-            
-            # ...............
-            #  Backward Pass
-            # ...............
-            
-            loss = np.mean(self.loss.loss(y,y_pred))
-            print('loss in epoch ' + str(i+1) + ' : ' + str(loss))
-            self.losses.append(loss)
-            np.nan_to_num(self.losses, nan = np.inf)
-            
-            if i > check_loss:
-                if self.losses[i] < np.min(self.losses[:i]):
-                   
-                    best_weights = self.W
-                    best_biases = self.w0
-            if loss < early_stop :
+            if loss.detach().numpy() < early_stop :
                 print('Minimal loss reached! early stop of training!')
-                self.stop = i
                 break
                 
-            # OUTPUT LAYER
-            # Grad. w.r.t input of output layer (have  no weights)
-            grad_wrt_out_l_input = np.mean(self.loss.gradient(y, y_pred)) * self.output_activation.gradient(output_layer_input)
+            if not hybrid is None: #Change to SGD if training is trapped in local minimum
+                if loss.detach().numpy() < hybrid: 
+                    optimizer  = optim.SGD(self.model.parameters(), lr = self.learning_rate)
+                  
+            loss.backward(retain_graph=True)
+            optimizer.step()
             
-            #therefore grad_v is zero
-            #grad_v = hidden_output.T.dot(grad_wrt_out_l_input)
-            grad_v = 0
-            grad_v0 = 0
-            #grad_v0 = np.sum(grad_wrt_out_l_input, axis=0, keepdims=True)
-        
-            # HIDDEN LAYER
-            # Grad. w.r.t input of hidden layer
-            
-            grad_hidden = np.zeros((self.n_hidden,  len(inp)))
-            
-            for j in range(self.n_hidden):
-                hidden_input = -1*(inp*self.W[0][j] + self.w0[0][j])
-                grad_hidden[j] = self.hidden_activation.gradient(hidden_input,X,self.dt)
-            grad_wrt_hidden_l_input = -1*grad_wrt_out_l_input*grad_hidden.T
-            grad_w = X.T.dot(grad_wrt_hidden_l_input)
-            
-            grad_w0 = np.sum(grad_wrt_hidden_l_input, axis=0, keepdims=True)
-            
-            # Update weights (by gradient descent)
-            # Move against the gradient to minimize loss
-            
-            if i > check_loss:
-                    
-                loss_change = self.losses[i] - np.mean(self.losses[-check_loss:])
-                 
-                if (loss_change > 0):
-                    
-                    #self.learning_rate = self.lr_cache*1.2
-                    self.W = best_weights
-                    self.w0 = best_biases 
-            if self.optimizer == False:
-                self.W  -= self.learning_rate * grad_w
-                
-            else :
-                    
-                if self.optimizer == 'adam' :
-                    self.W = self.adam.update(self.W, grad_w)
-                    #self.V = self.rprop.update(self.V, grad_v)
-                elif self.optimizer == 'rprop':
-
-                    eta_new, self.W = self.rprop.update(self.W, grad_w,old_grad, self.learning_rate)
-                    self.learning_rate =  eta_new
-                    print('new learning rate = ' + str(self.learning_rate))
-                    old_grad = grad_w
-
-                else:
-                    print('please use an optimizer (rprop or adam) or set optimizer to FALSE')
-
-            
-            if accept_bias:
-                
-                #self.V  -= self.learning_rate * grad_v
-                self.V -= 0
-                #self.v0 -= self.learning_rate * grad_v0
-                self.v0 -= 0
-                self.w0 -= self.learning_rate * grad_w0
-            else:
-                
-                self.V -= 0
-                self.v0 -= 0
-                self.w0 -= 0
-            
-
-            #print(self.W, self.w0)
-        return self.V, self.v0, self.W, self.w0
-    # Use the trained model to predict labels of X
-    def predict(self, X):
-        inp = np.array([np.arange(0,len(X)*self.dt, self.dt)]).T
-            
-   
-        hidden_output = np.zeros((self.n_hidden,  len(inp)))
-
-        for j in range(self.n_hidden):
-            hidden_input = -1*(inp*self.W[0][j] + self.w0[0][j])
-            hidden_output[j] = -1*self.hidden_activation(hidden_input,X, dt = self.dt) + self.fe
-
-        hidden_output = hidden_output.T
-
-        output_layer_input = hidden_output.dot(self.V) + self.v0
+        return losses, self.model
+                      
+                      
+    def compute_kernel(self,time, verbose_plot = False):
 
 
-        y_pred = self.output_activation(output_layer_input) 
-            
-        return y_pred
-    
-    def learning_curve(self):
-        epochs = np.arange(1,self.stop+1)
-        learning_curve = self.losses[:len(epochs)]
-        return epochs, learning_curve
-    
-    
-    def compute_kernel(self, time, verbose_plot = False, initial = None):
-        weights = (np.absolute(self.W))
-        biases = (np.absolute(self.w0))
+        weights = (np.absolute(self.model.fc1.weight.data.numpy()))
+        biases = self.model.fc1.bias.data.numpy()
+        amplitudes = (np.absolute(self.model.fc2.weight.data.numpy())).T
+
+        #biases = np.zeros(len(biases))
         self.kernel = np.zeros(len(time))
         n_weights = self.n_hidden
-        
-        if initial == None:
-            
-            for i in range(n_weights):
-           # k = (weights[0][i])**3 * np.exp(biases[0][i]**2)*np.exp(-weights[0][i]**2*time)
-                k = (weights[0][i])**3 * np.exp(biases[0][i])*np.exp(-weights[0][i]*time)
-                self.kernel += k
-            
-        else:
-            k0 = np.zeros(weights.shape)
-            for i in range (n_weights):
-                k0[0][i] = ((initial/np.exp(biases[0][i]))/n_weights)**(1/3)
-    
-                k = (k0[0][i])**3 * np.exp(biases[0][i])*np.exp(-k0[0][i]*time)
-                self.kernel += k
-        
-        
-    
+
+
+        for i in range(n_weights):
+            #k = (amplitudes[i])**3 * np.exp(biases[i]**2)*np.exp(-weights[i]*time)
+            k = (amplitudes[i]) * np.exp(biases[i])*np.exp(-weights[i]*time)
+            #k = weights[i] * np.exp(biases[i])*np.exp(-weights[i]*time)
+            self.kernel += k
+
         if verbose_plot:
-            plt.plot(t,self.kernel, label = 'extracted')
-            plt.show
-            
+                plt.plot(time,self.kernel, label = 'extracted')
+                plt.show
+
         return self.kernel
+    
+    def predict(self, X):
+        t = np.array([np.arange(0, len(X)*self.dt, self.dt)]).T
+        
+        feature = Variable(torch.FloatTensor([t]), requires_grad=True)
+        output = self.model(feature)
+        output = output[0].detach().numpy()
+        
+        return output
+    
+class MemInt(nn.Module): #class-activation for nn.Module, dt has to be modified before fitting!!
+    def __init__(self, fe, h, dt = 0.01):
+        super().__init__()
+        self.dt = dt
+        self.fe = fe
+        self.h = h #input of the NN
+    
+    def memint(self,x): #GLE activation function in hidden layer
+    
+        output = torch.zeros(x.shape)
+
+        for i in range(x.shape[2]): #calculating output for every node in hidden layer
+            output[0][0][i] = 0
+
+            dt = self.dt
+            
+            t = torch.arange(0,len(output[0])*dt,dt)
+
+            #h = torch.exp(-t)
+            kernel = torch.zeros(len(t))
+            #print(kernel.shape,self.h[0].view(len(kernel)).shape)
+            h = self.h[0].view(len(kernel))
+            for j in range(0,len(output[0])): 
+                inv_idx = torch.arange(h[:j].size(0)-1, -1, -1).long() #instead of h[:i][::-1], not supported in pytorch
+                inv_tensor = h[:j][inv_idx]
+
+                kernel[j] = torch.exp(-x[0][j][i])
+                
+                output[0][j][i] = - 0.5*dt*kernel[0]*h[j] - 0.5*dt*kernel[j]*h[0] - dt*torch.sum(kernel[1:j+1]*inv_tensor) + self.fe[0][j]
+                
+        #output = output + self.fe
+        #plt.plot(output[0].detach().numpy())
+        #plt.show()
+        return output #every output is summarized to one array at output layer
+
+        
+
+    def forward(self, x):
+        return self.memint(x)

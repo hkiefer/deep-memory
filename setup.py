@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 from codecs import open
 from os import path
 
-__version__ = '0.0.1'
+__version__ = '1.01'
 
 here = path.abspath(path.dirname(__file__))
 
@@ -24,7 +24,7 @@ setup(
     include_package_data=True,
     author='Henrik Kiefer',
     install_requires=install_requires,
-    setup_requires=['numpy>=1.10', 'scipy>=0.17', 'matplotlib'],
+    setup_requires=['numpy>=1.10', 'scipy>=0.17', 'matplotlib', 'torch', 'datetime','yfinance'],
     dependency_links=dependency_links,
     author_email='henrik.kiefer@fu-berlin.de'
 )
